@@ -64,6 +64,25 @@ const result = await fal.subscribe("fal-ai/flux-pro/v1.1", {
 // Mark as placeholder: <!-- TODO(midjourney): Replace with production image -->
 ```
 
+### Optional Atlas Cloud runner
+
+Fal.ai remains the default prototyping route. When the user explicitly asks to use
+Atlas Cloud and `ATLASCLOUD_API_KEY` is already configured, the bundled runner can
+generate the same kind of Flux 2 Pro placeholder without changing the default
+workflow:
+
+```bash
+node skills/asset-generation/scripts/atlas-generate.mjs \
+  --prompt "Painterly Mediterranean terrace at sunset, landscape hero image" \
+  --size 1280*720 \
+  --output public/images/hero-placeholder.jpeg
+```
+
+The runner reads the live Atlas Cloud model catalog and model schema before each
+generation. It submits the paid generation request exactly once, never retries an
+ambiguous submit, and applies bounded backoff only while polling the prediction GET
+endpoint. Keep the existing `TODO(midjourney)` marker on generated placeholders.
+
 ## API Comparison
 
 | Provider | Quality | Cost | Use Case |
