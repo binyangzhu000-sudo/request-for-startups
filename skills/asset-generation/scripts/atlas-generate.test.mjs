@@ -23,6 +23,8 @@ function contract() {
     predictionUrl: 'https://api.example.test/prediction/{request_id}',
     inputSchema: {
       properties: {
+        size: { type: 'string' },
+        seed: { type: 'integer' },
         output_format: { enum: ['jpeg', 'png'] },
         safety_tolerance: { minimum: 0, maximum: 5 },
       },
@@ -61,6 +63,32 @@ test('validates image payload against live schema constraints', () => {
   assert.throws(
     () => buildPayload(contract(), { prompt: 'hero', size: '100*100', outputFormat: 'jpeg', safetyTolerance: 2 }),
     /between 256 and 2048/,
+  );
+});
+
+test('rejects a non-integer seed', () => {
+  for (const seed of [Number.NaN, 1.5, Infinity]) {
+    assert.throws(() => buildPayload(contract(), { prompt: 'hero', seed }), /seed must be an integer/);
+  }
+});
+
+test('only sends inputs declared by the selected model schema', () => {
+  const other = {
+    ...contract(),
+    inputSchema: { properties: { prompt: {}, aspect_ratio: {} }, required: ['prompt'] },
+  };
+  const payload = buildPayload(other, { model: 'other/image-model', prompt: 'hero' });
+  assert.deepEqual(payload, { model: 'other/image-model', prompt: 'hero' });
+});
+
+test('rejects a model whose required inputs the runner cannot supply', () => {
+  const other = {
+    ...contract(),
+    inputSchema: { properties: { prompt: {}, image: {} }, required: ['prompt', 'image'] },
+  };
+  assert.throws(
+    () => buildPayload(other, { model: 'other/edit-model', prompt: 'hero' }),
+    /requires inputs this runner cannot supply: image/,
   );
 });
 
@@ -121,4 +149,37 @@ test('fails after the configured prediction poll bound', async () => {
     }),
     (error) => error instanceof AtlasError && /configured limit/.test(error.message),
   );
+});
+
+test('treats a timeout status as terminal instead of polling on', async () => {
+  let calls = 0;
+  await assert.rejects(
+    pollPrediction(contract(), 'secret', 'request-1', {
+      fetchImpl: async () => {
+        calls += 1;
+        return jsonResponse({ data: { status: 'timeout' } });
+      },
+      maxPolls: 5,
+      initialDelayMs: 1,
+      maxDelayMs: 1,
+      sleep: async () => {},
+    }),
+    (error) => error instanceof AtlasError && /status timeout/.test(error.message),
+  );
+  assert.equal(calls, 1);
+});
+
+test('retries a prediction GET whose body is not valid JSON', async () => {
+  const responses = [
+    new Response('<html>bad gateway</html>', { status: 200 }),
+    jsonResponse({ data: { status: 'completed', outputs: ['https://cdn.test/image.jpeg'] } }),
+  ];
+  const output = await pollPrediction(contract(), 'secret', 'request-1', {
+    fetchImpl: async () => responses.shift(),
+    maxPolls: 3,
+    initialDelayMs: 1,
+    maxDelayMs: 1,
+    sleep: async () => {},
+  });
+  assert.equal(output, 'https://cdn.test/image.jpeg');
 });

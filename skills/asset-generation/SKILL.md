@@ -74,7 +74,7 @@ workflow:
 ```bash
 node skills/asset-generation/scripts/atlas-generate.mjs \
   --prompt "Painterly Mediterranean terrace at sunset, landscape hero image" \
-  --size 1280*720 \
+  --size "1280*720" \
   --output public/images/hero-placeholder.jpeg
 ```
 

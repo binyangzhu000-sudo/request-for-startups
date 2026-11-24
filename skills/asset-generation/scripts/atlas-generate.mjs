@@ -55,7 +55,14 @@ async function requestJson(url, {
     }
     throw new AtlasError(`Atlas returned HTTP ${response.status}: ${detail}`);
   }
-  return response.json();
+  try {
+    return await response.json();
+  } catch (error) {
+    if (transientPrediction) {
+      throw new TransientPredictionError(`Atlas prediction GET returned an unreadable body: ${error.message}`);
+    }
+    throw new AtlasError(`Atlas returned an unreadable response body: ${error.message}`);
+  }
 }
 
 export async function discoverContract(model = DEFAULT_MODEL, fetchImpl = fetch) {
@@ -77,6 +84,9 @@ export async function discoverContract(model = DEFAULT_MODEL, fetchImpl = fetch)
   }
   if (!submitPath || !predictionPath) {
     throw new AtlasError('Live schema is missing model_run or model_result endpoints.');
+  }
+  if (!predictionPath.includes('{request_id}')) {
+    throw new AtlasError('Live schema prediction path has no {request_id} placeholder.');
   }
 
   return {
@@ -115,15 +125,30 @@ export function buildPayload(contract, {
   if (!Number.isInteger(safetyTolerance) || safetyTolerance < minimum || safetyTolerance > maximum) {
     throw new AtlasError(`safety_tolerance must be an integer from ${minimum} to ${maximum}.`);
   }
+  if (!Number.isInteger(seed)) throw new AtlasError('seed must be an integer.');
 
-  return {
-    model,
-    prompt: prompt.trim(),
+  // Only send inputs the selected model's live schema declares; another Atlas image
+  // model must not receive Flux-only fields. An empty schema means "unknown", so keep all.
+  const declared = Object.keys(properties);
+  const accepts = (name) => declared.length === 0 || declared.includes(name);
+  const payload = { model, prompt: prompt.trim() };
+  const optional = {
     size,
     output_format: outputFormat,
     safety_tolerance: safetyTolerance,
     seed,
   };
+  for (const [name, value] of Object.entries(optional)) {
+    if (accepts(name)) payload[name] = value;
+  }
+
+  const missing = (contract.inputSchema.required ?? []).filter((name) => !(name in payload));
+  if (missing.length) {
+    throw new AtlasError(
+      `Model ${model} requires inputs this runner cannot supply: ${missing.join(', ')}.`,
+    );
+  }
+  return payload;
 }
 
 export async function submitOnce(contract, apiKey, payload, fetchImpl = fetch) {
@@ -164,8 +189,10 @@ export async function pollPrediction(contract, apiKey, requestId, {
         if (!output) throw new AtlasError('Completed prediction did not include an image URL.');
         return output;
       }
-      if (status === 'failed') {
-        throw new AtlasError(`Atlas image generation failed: ${prediction.error ?? 'unknown error'}`);
+      if (['failed', 'timeout', 'canceled', 'cancelled'].includes(status)) {
+        throw new AtlasError(
+          `Atlas image generation ended with status ${status}: ${prediction.error ?? 'unknown error'}`,
+        );
       }
     } catch (error) {
       if (!(error instanceof TransientPredictionError)) throw error;
